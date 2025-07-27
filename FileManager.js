@@ -168,7 +168,7 @@
         getBaseName: function(path) {
             let fileName = new File(path).getName();
             let dotIndex = fileName.lastIndexOf('.');
-            return dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+            return dotIndex > 0 ? String(fileName.substring(0, dotIndex)) : String(fileName);
         },
 
         /**
@@ -179,7 +179,7 @@
         getExtension: function(path) {
             let fileName = new File(path).getName();
             let dotIndex = fileName.lastIndexOf('.');
-            return dotIndex > -1 ? fileName.substring(dotIndex + 1).toLowerCase() : '';
+            return dotIndex > -1 ? String(fileName.substring(dotIndex + 1).toLowerCase()) : '';
         }
     };
 
@@ -235,6 +235,7 @@
      * @param {string} path 탐색할 폴더의 경로
      * @param {object} [options] 조회 옵션
      * @param {boolean} [options.detail=false] 파일 상세 정보(크기, 수정일) 표시 여부
+     * @param {boolean} [options.showEmptyFolders=false] 내용이 없는 폴더 표시 여부
      * @param {object} [options.search] 검색 조건
      * @param {string} [options.search.name] 파일명에 포함되어야 할 문자열
      * @param {string} [options.search.regex] 파일명에 포함되어야 할 정규식
@@ -248,8 +249,10 @@
      */
     FileManager.prototype.getDirectoryTree = function(path, options) {
         try {
+            const self = this;
             let opts = options || {};
-            opts.detail = opts.detail || false;
+            opts.detail = opts.detail === true;
+            opts.showEmptyFolders = opts.showEmptyFolders === true;
             opts.search = opts.search || {};
             opts.sort = opts.sort || {};
             opts.sort.by = opts.sort.by || 'name';
@@ -288,7 +291,6 @@
             const file = new File(path);
             if (!file.exists() || !file.isDirectory()) return null;
 
-            const resultLines = [file.getName() + '/'];
             const hasContentSearch = !!(opts.search.content || opts.search.contentRegex);
 
             /**
@@ -301,6 +303,7 @@
                 if (items === null) return;
 
                 let itemList = Array.from(items);
+                let localLines = [];
 
                 let filteredList = itemList.filter(item => {
                     // 폴더는 항상 포함
@@ -309,7 +312,7 @@
                     // 이름, 확장자
                     const itemName = item.getName();
                     const itemNameLower = itemName.toLowerCase();
-                    const extension = this.utils.getExtension(itemName);
+                    const extension = self.utils.getExtension(itemName);
 
                     if (opts.search.extension && extension !== opts.search.extension.toLowerCase()) return false;
                     if (opts.search.name && !itemNameLower.includes(opts.search.name.toLowerCase())) return false;
@@ -355,24 +358,30 @@
                 // 결과 문자열 생성
                 for (let i = 0; i < filteredList.length; i++) {
                     let item = filteredList[i];
-                    let prefix = '\u2502  '.repeat(depth - 1) + (i === filteredList.length - 1 ? "\u2514 " : "\u251C "); // 문자가 깨지길래 유니코드로 표기
+                    let prefix = '\u2502  '.repeat(depth - 1) + (i === filteredList.length - 1 ? "\u2514 " : "\u251C ");
 
                     if (item.isDirectory()) {
-                        resultLines.push(prefix + item.getName() + '/');
-                        traverse(item, depth + 1);
+                        let childLines = traverse(item, depth + 1);
+                        if (childLines.length > 0 || opts.showEmptyFolders) {
+                            localLines.push(prefix + item.getName() + '/');
+                            localLines = localLines.concat(childLines);
+                        }
                     } else {
                         let fileName = prefix + item.getName();
                         if (opts.detail) {
                             let metadata = this.getMetadata(item.getAbsolutePath());
-                            fileName += ` (${metadata.readableSize} / ${metadata.readableLastModified})`;
+                            if (metadata) {
+                                fileName += ` (${metadata.readableSize} / ${metadata.readableLastModified})`;
+                            }
                         }
-                        resultLines.push(fileName);
+                        localLines.push(fileName);
                     }
                 }
+                return localLines;
             };
 
-            traverse(file, 1);
-            return resultLines.join('\n');
+            const treeLines = traverse(file, 1);
+            return [file.getName() + '/'].concat(treeLines).join('\n');
 
         } catch (e) {
             this._handleError(e);

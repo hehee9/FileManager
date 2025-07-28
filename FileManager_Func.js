@@ -7,10 +7,28 @@ const ZipEntry = java.util.zip.ZipEntry;
 const newInstance = java.lang.reflect.Array.newInstance;
 
 /**
- * @description FileManager
- * - 기존 유틸리티 스크립트를 기반으로 한 파일 및 디렉토리 작업을 통합한 클래스
+ * @description 파일 관리자 클래스
+ * @param {string} [basePath] 샌드박스 기본 경로
  */
-function FileManager() {}
+function FileManager(basePath) {
+    this.basePath = null;
+    this.isSandboxed = false;
+
+    if (basePath && typeof basePath === 'string') {
+        try {
+            let baseDir = new File(basePath);
+            if (!baseDir.exists()) {
+                baseDir.mkdirs();
+            }
+            this.basePath = baseDir.getAbsolutePath();
+            this.isSandboxed = true;
+        } catch (e) {
+            this._handleError(e, "기본 경로 '" + basePath + "' 설정에 실패하여 샌드박스가 비활성화됩니다.");
+            this.basePath = null;
+            this.isSandboxed = false;
+        }
+    }
+}
 
 /* ============================= 헬퍼 및 유틸리티 ============================= */
 
@@ -23,6 +41,48 @@ FileManager.prototype._handleError = function(e, customMessage) {
     let errorMessage = customMessage ? customMessage + '\n' : '';
     errorMessage += `${e.name}\n${e.message}\n${e.stack}`;
     Log.e(errorMessage);
+};
+
+/**
+ * @description 사용자 경로를 안전한 절대 경로로 변환
+ * @param {string} userPath 입력 경로
+ * @returns {java.io.File|null} 안전하게 검증된 File 객체 | null
+ * @private
+ */
+FileManager.prototype._resolvePath = function(userPath) {
+    if (!this.isSandboxed) {
+        return new File(String(userPath || ''));
+    }
+
+    let pathStr = String(userPath || '').trim();
+    if (pathStr === '') {
+        this._handleError(new Error("Invalid path input"), "경로가 비어있습니다.");
+        return null;
+    }
+
+    try {
+        let resolvedFile;
+        let targetFile = new File(pathStr);
+
+        if (targetFile.isAbsolute() || pathStr.startsWith('sdcard/')) {
+            resolvedFile = targetFile;
+        } else {
+            resolvedFile = new File(this.basePath, pathStr);
+        }
+
+        const canonicalPath = resolvedFile.getCanonicalPath();
+        const baseCanonicalPath = new File(this.basePath).getCanonicalPath();
+
+        if (!canonicalPath.startsWith(baseCanonicalPath)) {
+            this._handleError(new Error("Security Exception"), "허용된 작업 공간을 벗어난 경로입니다: " + pathStr);
+            return null;
+        }
+
+        return resolvedFile;
+    } catch (e) {
+        this._handleError(e, "경로를 확인하는 중 오류가 발생했습니다: " + pathStr);
+        return null;
+    }
 };
 
 /**
@@ -173,7 +233,8 @@ FileManager.prototype.utils = {
  */
 FileManager.prototype.createDirectory = function(path) {
     try {
-        let file = new File(path);
+        let file = this._resolvePath(path);
+        if (!file) return false;
         if (file.exists()) return true;
         return file.mkdirs();
     } catch (e) {
@@ -189,11 +250,12 @@ FileManager.prototype.createDirectory = function(path) {
  */
 FileManager.prototype.deleteDirectory = function(path) {
     try {
-        const file = new File(path);
+        const file = this._resolvePath(path);
+        if (!file) return false;
         if (!file.exists()) return true;
         if (!file.isDirectory()) return file.delete();
 
-        const result = this._traverseDirectory(path, {
+        const result = this._traverseDirectory(file.getAbsolutePath(), {
             onFile: (file, context) => {
                 if (!file.delete()) context.success = false;
             },
@@ -230,6 +292,9 @@ FileManager.prototype.deleteDirectory = function(path) {
  */
 FileManager.prototype.getDirectoryTree = function(path, options) {
     try {
+        const file = this._resolvePath(path);
+        if (!file) return null;
+
         const self = this;
         let opts = options || {};
         opts.detail = opts.detail === true;
@@ -280,7 +345,6 @@ FileManager.prototype.getDirectoryTree = function(path, options) {
             }
         }
 
-        const file = new File(path);
         if (!file.exists() || !file.isDirectory()) return null;
 
         const hasContentSearch = !!(opts.search.content || opts.search.contentRegex);
@@ -388,9 +452,8 @@ FileManager.prototype.getDirectoryTree = function(path, options) {
  */
 FileManager.prototype.getMetadata = function(path) {
     try {
-        let file = new File(path);
-
-        if (!file.exists()) return null;
+        let file = this._resolvePath(path);
+        if (!file || !file.exists()) return null;
 
         let size = file.length(); // 파일 크기 (bytes)
         let lastModified = file.lastModified(); // 마지막 수정 시간 (timestamp)
@@ -419,11 +482,13 @@ FileManager.prototype.getMetadata = function(path) {
  * @returns {string|null} 파일 내용 | null
  */
 FileManager.prototype.write = function(path, data) {
-    if (!path || typeof path !== "string") return null;
+    let file = this._resolvePath(path);
+    if (!file) return null;
+
     if (data === undefined) data = "";
 
-    try{
-        return FileStream.write(path, data);
+    try {
+        return FileStream.write(file.getAbsolutePath(), data);
     } catch (e) {
         this._handleError(e);
         return null;
@@ -436,8 +501,9 @@ FileManager.prototype.write = function(path, data) {
  * @returns {string|null} 파일 내용 | null
  */
 FileManager.prototype.read = function(path) {
-    if (!path || typeof path !== "string") return null;
-    return FileStream.read(path);
+    let file = this._resolvePath(path);
+    if (!file) return null;
+    return FileStream.read(file.getAbsolutePath());
 }
 
 /**
@@ -447,10 +513,12 @@ FileManager.prototype.read = function(path) {
  * @returns {string|null} 전체 파일 내용 | null
  */
 FileManager.prototype.append = function(path, data) {
-    if (!path || typeof path !== "string") return null;
+    let file = this._resolvePath(path);
+    if (!file) return null;
+
     if (data === undefined) data = "";
     try {
-        return FileStream.append(path, data);
+        return FileStream.append(file.getAbsolutePath(), data);
     } catch (e) {
         this._handleError(e);
         return null;
@@ -463,9 +531,10 @@ FileManager.prototype.append = function(path, data) {
  * @returns {boolean} 성공 여부
  */
 FileManager.prototype.delete = function(path) {
-    if (!path || typeof path !== "string") return false;
+    let file = this._resolvePath(path);
+    if (!file) return false;
     try {
-        return FileStream.remove(path);
+        return FileStream.remove(file.getAbsolutePath());
     } catch (e) {
         this._handleError(e);
         return false;
@@ -481,40 +550,37 @@ FileManager.prototype.delete = function(path) {
  * @returns {boolean} 성공 여부
  */
 FileManager.prototype.move = function(sourcePath, resultPath) {
-    /**
-     * @description 파일 재귀 삭제
-     * @param {java.io.File} fileToDelete 삭제할 파일 또는 폴더의 File 객체
-     */
-    const _deleteRecursively = (fileToDelete) => {
-        if (fileToDelete.isDirectory()) {
-            let children = fileToDelete.listFiles();
-            if (children !== null) {
-                for (let i = 0; i < children.length; i++) {
-                    _deleteRecursively(children[i]);
-                }
-            }
-        }
-        fileToDelete.delete();
-    };
-
-    const copySuccess = this.copy(sourcePath, resultPath);
-
-    if (!copySuccess) {
-        Log.e("이동 실패: 복사 과정에서 오류가 발생했습니다.");
-        return false;
-    }
-
     try {
-        let targets = Array.isArray(sourcePath) ? sourcePath : [sourcePath];
+        let source = this._resolvePath(sourcePath);
+        let destination = this._resolvePath(resultPath);
 
-        for (let i = 0; i < targets.length; i++) {
-            let path = targets[i];
-            let source = new File(path);
-            if (source.exists()) _deleteRecursively(source);
+        if (!source || !destination) {
+            Log.e("이동 실패: 소스 또는 대상 경로가 유효하지 않습니다.");
+            return false;
         }
-        return true;
+        if (!source.exists()) {
+            Log.e("이동 실패: 소스 파일/폴더를 찾을 수 없습니다: " + sourcePath);
+            return false;
+        }
+
+        let destParent = destination.getParentFile();
+        if (destParent && !destParent.exists()) {
+            destParent.mkdirs();
+        }
+
+        if (source.renameTo(destination)) {
+            return true;
+        }
+
+        Log.d("renameTo 실패. 복사 후 삭제 방식으로 이동을 시도합니다.");
+        if (this.copy(source.getAbsolutePath(), destination.getAbsolutePath())) {
+            return this.remove(source.getAbsolutePath());
+        }
+
+        Log.e("이동에 최종 실패했습니다: " + sourcePath);
+        return false;
     } catch (e) {
-        this._handleError(e);
+        this._handleError(e, "파일 이동 중 오류 발생");
         return false;
     }
 };
@@ -526,53 +592,60 @@ FileManager.prototype.move = function(sourcePath, resultPath) {
  * @returns {boolean} 성공 여부
  */
 FileManager.prototype.copy = function(sourcePath, resultPath) {
-    if (!sourcePath || !resultPath || typeof resultPath !== "string") return false;
-
     try {
-        const targets = Array.isArray(sourcePath) ? sourcePath : [sourcePath];
-        const resultDir = new File(resultPath);
+        let source = this._resolvePath(sourcePath);
+        let destination = this._resolvePath(resultPath);
 
-        if (!this.createDirectory(resultPath)) {
-            Log.e(`복사 실패: 대상 폴더 '${resultPath}'를 생성할 수 없습니다.`);
+        if (!source || !destination || !source.exists()) {
+            Log.e(`복사 실패: 원본(${sourcePath}) 또는 대상(${resultPath}) 경로가 유효하지 않거나 원본이 존재하지 않습니다.`);
             return false;
         }
 
-        for (let i = 0; i < targets.length; i++) {
-            let path = targets[i];
-            let source = new File(path);
+        // 대상의 부모 디렉토리 생성
+        let destParent = destination.getParentFile();
+        if (destParent && !destParent.exists()) {
+            destParent.mkdirs();
+        }
 
-            if (!source.exists()) {
-                Log.e(`복사 실패: 원본 '${path}'를 찾을 수 없습니다.`);
-                continue;
+        if (source.isFile()) {
+            this._copyFile(source, destination);
+        } else if (source.isDirectory()) {
+            if (!destination.exists()) {
+                destination.mkdirs();
             }
 
-            let destination = new File(resultDir, source.getName());
-
-            if (source.isFile()) {
-                this._copyFile(source, destination);
-            } else if (source.isDirectory()) {
-                this._traverseDirectory(path, {
-                    onDir: (dir, context) => {
-                        let relativePath = context.sourceRoot.toURI().relativize(dir.toURI()).getPath();
-                        let newDestDir = new File(context.resultRoot, relativePath);
+            let sourceRootPath = String(source.getAbsolutePath());
+            if (!sourceRootPath.endsWith(File.separator)) {
+                sourceRootPath += File.separator;
+            }
+            
+            this._traverseDirectory(source.getAbsolutePath(), {
+                onDir: (dir, context) => {
+                    let currentPath = String(dir.getAbsolutePath());
+                    let relativePath = currentPath.substring(context.sourceRootPath.length);
+                    
+                    if (relativePath.length > 0) {
+                        let newDestDir = new File(context.resultRootPath, relativePath);
                         if (!newDestDir.exists()) newDestDir.mkdirs();
-                    },
-                    onFile: (file, context) => {
-                        let relativePath = context.sourceRoot.toURI().relativize(file.toURI()).getPath();
-                        let newDestFile = new File(context.resultRoot, relativePath);
-                        this._copyFile(file, newDestFile);
-                    },
-                    initialContext: {
-                        sourceRoot: source,
-                        resultRoot: destination
-                    },
-                    order: 'pre-order'
-                });
-            }
+                    }
+                },
+                onFile: (file, context) => {
+                    let currentPath = String(file.getAbsolutePath());
+                    let relativePath = currentPath.substring(context.sourceRootPath.length);
+                    
+                    let newDestFile = new File(context.resultRootPath, relativePath);
+                    this._copyFile(file, newDestFile);
+                },
+                initialContext: {
+                    sourceRootPath: sourceRootPath,
+                    resultRootPath: String(destination.getAbsolutePath())
+                },
+                order: 'pre-order'
+            });
         }
         return true;
     } catch (e) {
-        this._handleError(e);
+        this._handleError(e, "파일 복사 중 오류 발생");
         return false;
     }
 };
@@ -586,13 +659,25 @@ FileManager.prototype.copy = function(sourcePath, resultPath) {
  * @returns {string|null} 성공 시 압축 파일 경로 | null
  */
 FileManager.prototype.zip = function(sourcePath, zipFilePath) {
-    // 결과 경로 설정
-    if (!zipFilePath) {
+    let sourceFile = this._resolvePath(sourcePath);
+    if (!sourceFile || !sourceFile.exists()) {
+        Log.e("소스 경로가 존재하지 않거나 유효하지 않습니다.\n시도한 경로: " + sourcePath);
+        return null;
+    }
+
+    let zipFile;
+    if (zipFilePath) {
+        zipFile = this._resolvePath(zipFilePath);
+        if (!zipFile) {
+            Log.e("압축 파일 경로가 유효하지 않습니다.\n시도한 경로: " + zipFilePath);
+            return null;
+        }
+    } else {
         try {
-            let sourceFileForPath = new File(sourcePath);
-            let parentDir = sourceFileForPath.getParent();
-            let baseName = this.utils.getBaseName(sourceFileForPath.getName());
-            zipFilePath = parentDir ? `${parentDir}/${baseName}.zip` : `${baseName}.zip`;
+            let parentDir = sourceFile.getParent();
+            let baseName = this.utils.getBaseName(sourceFile.getName());
+            let resolvedZipPath = parentDir ? `${parentDir}/${baseName}.zip` : `${baseName}.zip`;
+            zipFile = new File(resolvedZipPath);
         } catch (e) {
             this._handleError(e);
             return null;
@@ -602,30 +687,31 @@ FileManager.prototype.zip = function(sourcePath, zipFilePath) {
     let fos = null;
     let zos = null;
     try {
-        const sourceFile = new File(sourcePath);
-        if (!sourceFile.exists()) {
-            Log.e("소스 경로가 존재하지 않습니다.\n시도한 경로: " + sourcePath);
-            return null;
-        }
-
-        fos = new FileOutputStream(zipFilePath);
+        fos = new FileOutputStream(zipFile);
         zos = new ZipOutputStream(fos);
         const _this = this;
 
-        // 압축 파일 내에 루트 폴더 이름을 포함시키기 위해, 경로는 원본 폴더의 부모를 기준으로 생성
         if (sourceFile.isDirectory()) {
-            const sourceParent = sourceFile.getParentFile();
-            this._traverseDirectory(sourcePath, {
+            let sourceRootPath = String(sourceFile.getAbsolutePath());
+            if (!sourceRootPath.endsWith(File.separator)) {
+                sourceRootPath += File.separator;
+            }
+
+            this._traverseDirectory(sourceFile.getAbsolutePath(), {
                 onDir: (dir, context) => {
                     const children = dir.listFiles();
                     if (children === null || children.length === 0) {
-                        const entryName = context.sourceParent.toURI().relativize(dir.toURI()).getPath() + '/';
-                        context.zos.putNextEntry(new ZipEntry(entryName));
-                        context.zos.closeEntry();
+                        let currentPath = String(dir.getAbsolutePath());
+                        let entryName = currentPath.substring(context.sourceRootPath.length) + '/';
+                        if (entryName.length > 1) { // 루트 디렉토리 자체는 제외
+                            context.zos.putNextEntry(new ZipEntry(entryName));
+                            context.zos.closeEntry();
+                        }
                     }
                 },
                 onFile: (file, context) => {
-                    const entryName = context.sourceParent.toURI().relativize(file.toURI()).getPath();
+                    let currentPath = String(file.getAbsolutePath());
+                    const entryName = currentPath.substring(context.sourceRootPath.length);
                     const zipEntry = new ZipEntry(entryName);
                     context.zos.putNextEntry(zipEntry);
                     let fis = new FileInputStream(file);
@@ -638,13 +724,11 @@ FileManager.prototype.zip = function(sourcePath, zipFilePath) {
                 },
                 initialContext: {
                     zos: zos,
-                    sourceParent: sourceParent
+                    sourceRootPath: sourceRootPath
                 },
                 order: 'pre-order'
             });
-        }
-        // 소스가 파일인 경우
-        else {
+        } else { // 단일 파일 압축
             let fis = null;
             try {
                 fis = new FileInputStream(sourceFile);
@@ -657,7 +741,7 @@ FileManager.prototype.zip = function(sourcePath, zipFilePath) {
             }
         }
 
-        return zipFilePath;
+        return zipFile.getAbsolutePath();
 
     } catch (e) {
         this._handleError(e);
@@ -666,7 +750,6 @@ FileManager.prototype.zip = function(sourcePath, zipFilePath) {
         try {
             if (zos !== null) zos.close();
             if (fos !== null) fos.close();
-
         } catch (e) {
             this._handleError(e);
         }
@@ -680,35 +763,40 @@ FileManager.prototype.zip = function(sourcePath, zipFilePath) {
  * @returns {string|null} 성공 시 압축 해제된 폴더 경로 | null
  */
 FileManager.prototype.unzip = function(zipFilePath, resultFolderPath) {
-    let zipFile = new File(zipFilePath);
-
-    if (!zipFile.exists() || zipFile.isDirectory()) {
-        Log.e(`${zipFilePath}은/는 파일이나 디렉토리가 아닙니다.`);
+    let zipFile = this._resolvePath(zipFilePath);
+    if (!zipFile || !zipFile.exists() || zipFile.isDirectory()) {
+        Log.e(`${zipFilePath}은/는 파일이 아니거나 유효하지 않습니다.`);
         return null;
     }
 
     let destDirectory;
     if (resultFolderPath) {
-        destDirectory = new File(resultFolderPath);
+        destDirectory = this._resolvePath(resultFolderPath);
+        if (!destDirectory) {
+            Log.e(`압축 해제 결과 폴더 경로가 유효하지 않습니다: ${resultFolderPath}`);
+            return null;
+        }
     } else {
         let destDirName = this.utils.getBaseName(zipFile.getName());
         destDirectory = new File(zipFile.getParent(), destDirName);
-    }
-
-    let destDirPath;
-
-    try {
-        destDirPath = destDirectory.getCanonicalPath();
-    } catch (e) {
-        this._handleError(e);
-        return null;
     }
 
     if (!destDirectory.exists()) {
         destDirectory.mkdirs();
     }
 
-    // 압축 해제 로직
+    // Zip Slip 방지를 위한 대상 경로 정규화
+    let destDirPath;
+    try {
+        destDirPath = destDirectory.getCanonicalPath();
+        if (!destDirPath.endsWith(File.separator)) {
+            destDirPath += File.separator;
+        }
+    } catch (e) {
+        this._handleError(e, "대상 경로 정규화 실패");
+        return null;
+    }
+
     let fis = null;
     let zis = null;
     try {
@@ -717,14 +805,12 @@ FileManager.prototype.unzip = function(zipFilePath, resultFolderPath) {
         let zipEntry;
 
         while ((zipEntry = zis.getNextEntry()) != null) {
-            let newFilePath = new File(destDirectory, zipEntry.getName()).getCanonicalPath();
+            let newFile = new File(destDirectory, zipEntry.getName());
+            let newFilePath = newFile.getCanonicalPath();
 
-            // Zip Slip 보안 취약점 방지
-            if (!newFilePath.startsWith(destDirPath + File.separator)) {
-                throw new java.io.IOException("잘못된 파일 경로입니다: " + zipEntry.getName());
+            if (!newFilePath.startsWith(destDirPath)) {
+                throw new java.io.IOException("Zip Slip 취약점 의심 - 잘못된 파일 경로입니다: " + zipEntry.getName());
             }
-
-            let newFile = new File(newFilePath);
 
             if (zipEntry.isDirectory()) {
                 if (!newFile.isDirectory() && !newFile.mkdirs()) {
@@ -737,12 +823,11 @@ FileManager.prototype.unzip = function(zipFilePath, resultFolderPath) {
                 }
 
                 let fos = new FileOutputStream(newFile);
-                let buffer = newInstance(java.lang.Byte.TYPE, 4096);
-                let len;
-                while ((len = zis.read(buffer)) > 0) {
-                    fos.write(buffer, 0, len);
+                try {
+                    this._copyStream(zis, fos);
+                } finally {
+                    fos.close();
                 }
-                fos.close();
             }
             zis.closeEntry();
         }
@@ -750,11 +835,9 @@ FileManager.prototype.unzip = function(zipFilePath, resultFolderPath) {
         return destDirectory.getAbsolutePath();
 
     } catch (e) {
-        this._handleError(e);
+        this._handleError(e, "압축 해제 중 오류 발생");
         return null;
-
     } finally {
-        // 리소스 정리
         try {
             if (zis != null) zis.close();
             if (fis != null) fis.close();
@@ -776,14 +859,14 @@ FileManager.prototype.getStorageSize = function(path, unit) {
     const targetUnit = unit || "mb";
 
     try {
-        const file = new File(path);
-        if (!file.exists()) return null;
+        const file = this._resolvePath(path);
+        if (!file || !file.exists()) return null;
 
         if (file.isFile()) {
             return this._convertSize(file.length(), targetUnit);
         }
 
-        const context = this._traverseDirectory(path, {
+        const context = this._traverseDirectory(file.getAbsolutePath(), {
             onFile: (file, context) => {
                 context.totalSize += file.length();
             },
@@ -803,11 +886,11 @@ FileManager.prototype.getStorageSize = function(path, unit) {
  * @returns {boolean} 성공 여부
  */
 FileManager.prototype.remove = function(path) {
-    if (!path || typeof path !== "string") return false;
     try {
-        let file = new File(path);
+        let file = this._resolvePath(path);
+        if (!file) return false;
         if (!file.exists()) return true;
-        if (file.isDirectory()) return this.deleteDirectory(path);
+        if (file.isDirectory()) return this.deleteDirectory(file.getAbsolutePath());
         return file.delete();
     } catch (e) {
         this._handleError(e);

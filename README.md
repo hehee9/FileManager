@@ -17,9 +17,11 @@
 
 ```javascript
 const FM = require("FileManager");
-const FileManager = new FM;
+const FileManager = new FM();
+const sandboxedFileManager = new FM("sdcard/msgbot"); // 샌드박스 기본 경로 설정, sdcard/msgbot 내에서만 작업 가능
 
 Log.i(FileManager.getDirectoryTree("sdcard/msgbot"));
+Log.i(sandboxedFileManager.getDirectoryTree("."));
 ```
 
 ## 사용 예시

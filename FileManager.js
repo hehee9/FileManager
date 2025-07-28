@@ -311,7 +311,7 @@
              */
             const traverse = (directory, depth) => {
                 let items = directory.listFiles();
-                if (items === null) return;
+                if (items === null) return [];
 
                 let itemList = Array.from(items);
                 let localLines = [];

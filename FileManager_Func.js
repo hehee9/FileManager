@@ -220,7 +220,7 @@ FileManager.prototype.deleteDirectory = function(path) {
  * @param {object} [options.search] 검색 조건
  * @param {string} [options.search.name] 파일명에 포함되어야 할 문자열
  * @param {string} [options.search.regex] 파일명에 포함되어야 할 정규식
- * @param {string} [options.search.extension] 필터링할 확장자 (점 제외, 예: 'png', 'txt')
+ * @param {string|string[]} [options.search.extension] 필터링할 확장자 (점 제외, 예: 'png', ['txt', 'pdf'])
  * @param {string} [options.search.content] 파일 내용에 포함되어야 할 문자열
  * @param {string} [options.search.contentRegex] 파일 내용에 적용할 정규식
  * @param {object} [options.sort] 정렬 조건
@@ -248,6 +248,17 @@ FileManager.prototype.getDirectoryTree = function(path, options) {
             'exe', 'apk', 'dmg', 'iso', // 실행/이미지 파일
             'db', 'sqlite', 'sqlite3' // 데이터베이스
         ];
+
+        let extensionOpt = opts.search.extension;
+        if (extensionOpt) {
+            if (typeof extensionOpt === 'string') {
+                extensionOpt = [extensionOpt.toLowerCase()];
+            } else if (Array.isArray(extensionOpt)) {
+                extensionOpt = extensionOpt.map(ext => String(ext).toLowerCase());
+            } else {
+                extensionOpt = null;
+            }
+        }
 
         let fileNameRegex = null;
         if (opts.search.regex) {
@@ -295,7 +306,7 @@ FileManager.prototype.getDirectoryTree = function(path, options) {
                 const itemNameLower = itemName.toLowerCase();
                 const extension = self.utils.getExtension(itemName);
 
-                if (opts.search.extension && extension !== opts.search.extension.toLowerCase()) return false;
+                if (extensionOpt && !extensionOpt.includes(extension)) return false;
                 if (opts.search.name && !itemNameLower.includes(opts.search.name.toLowerCase())) return false;
                 if (fileNameRegex && !fileNameRegex.test(itemName)) return false;
 

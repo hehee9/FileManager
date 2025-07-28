@@ -315,7 +315,12 @@
      */
     FileManager.prototype.getDirectoryTree = function(path, options) {
         try {
-            const file = this._resolvePath(path);
+            let targetPath = path;
+            if (!targetPath || ['.', '/', './', ''].includes(String(targetPath).trim())) {
+                targetPath = this.isSandboxed ? "." : "sdcard/";
+            }
+
+            const file = this._resolvePath(targetPath);
             if (!file) return null;
 
             const self = this;

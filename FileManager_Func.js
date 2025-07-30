@@ -28,6 +28,14 @@ function FileManager(basePath) {
             this.isSandboxed = false;
         }
     }
+
+    const methodNames = Object.getOwnPropertyNames(FileManager.prototype);
+    for (let i = 0; i < methodNames.length; i++) {
+        let methodName = methodNames[i];
+        if (methodName !== 'constructor' && typeof this[methodName] === 'function') {
+            this[methodName] = this[methodName].bind(this);
+        }
+    }
 }
 
 /* ============================= 헬퍼 및 유틸리티 ============================= */
@@ -41,6 +49,20 @@ FileManager.prototype._handleError = function(e, customMessage) {
     let errorMessage = customMessage ? customMessage + '\n' : '';
     errorMessage += `${e.name}\n${e.message}\n${e.stack}`;
     Log.e(errorMessage);
+};
+
+/**
+ * @description 비어있거나 현재 디렉토리를 의미하는 경로를 기본 경로로 변환
+ * @param {string} userPath 사용자 입력 경로
+ * @returns {string} 정규화된 경로
+ * @private
+ */
+FileManager.prototype._normalizePath = function(userPath) {
+    const pathStr = String(userPath || '').trim();
+    if (['', '.', '/', './'].includes(pathStr)) {
+        return this.isSandboxed ? "." : "sdcard/";
+    }
+    return userPath;
 };
 
 /**
@@ -99,7 +121,7 @@ FileManager.prototype._copyStream = function(sourceStream, destStream) {
 };
 
 /**
- * @description 파일 복사 (내부 헬퍼)
+ * @description 파일 복사
  * @param {java.io.File} sourceFile 원본 파일 객체
  * @param {java.io.File} destFile 대상 파일 객체
  */
@@ -145,6 +167,20 @@ FileManager.prototype._convertSize = function(bytes, unit) {
             break;
     }
     return Number(size.toFixed(2));
+};
+
+/**
+ * @description 크기 자동 포맷팅
+ * @param {number} bytes 바이트
+ * @returns {string} 포맷팅된 크기
+ */
+FileManager.prototype._formatSize = function(bytes) {
+    if (bytes === 0) return '0 B';
+    const KILO = 1024;
+    const SIZES = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(KILO));
+    const size = parseFloat((bytes / Math.pow(KILO, i)).toFixed(2));
+    return size + ' ' + SIZES[i];
 };
 
 /**
@@ -250,7 +286,8 @@ FileManager.prototype.createDirectory = function(path) {
  */
 FileManager.prototype.deleteDirectory = function(path) {
     try {
-        const file = this._resolvePath(path);
+        let normalizedPath = this._normalizePath(path);
+        const file = this._resolvePath(normalizedPath);
         if (!file) return false;
         if (!file.exists()) return true;
         if (!file.isDirectory()) return file.delete();
@@ -292,11 +329,7 @@ FileManager.prototype.deleteDirectory = function(path) {
  */
 FileManager.prototype.getDirectoryTree = function(path, options) {
     try {
-        let targetPath = path;
-        if (!targetPath || ['.', '/', './', ''].includes(String(targetPath).trim())) {
-            targetPath = this.isSandboxed ? "." : "sdcard/";
-        }
-
+        let targetPath = this._normalizePath(path);
         const file = this._resolvePath(targetPath);
         if (!file) return null;
 
@@ -469,7 +502,7 @@ FileManager.prototype.getMetadata = function(path) {
             size: size,
             lastModified: lastModified,
             isDirectory: file.isDirectory(),
-            readableSize: this._convertSize(size, "mb") + " MB",
+            readableSize: this._formatSize(size),
             readableLastModified: new Date(lastModified + 32_400_000).toISOString().replace('T', ' ').slice(0, 16)
         };
     } catch (e) {
@@ -664,7 +697,8 @@ FileManager.prototype.copy = function(sourcePath, resultPath) {
  * @returns {string|null} 성공 시 압축 파일 경로 | null
  */
 FileManager.prototype.zip = function(sourcePath, zipFilePath) {
-    let sourceFile = this._resolvePath(sourcePath);
+    let normalizedSourcePath = this._normalizePath(sourcePath);
+    let sourceFile = this._resolvePath(normalizedSourcePath);
     if (!sourceFile || !sourceFile.exists()) {
         Log.e("소스 경로가 존재하지 않거나 유효하지 않습니다.\n시도한 경로: " + sourcePath);
         return null;
@@ -861,24 +895,29 @@ FileManager.prototype.unzip = function(zipFilePath, resultFolderPath) {
  * @returns {number|null} 파일 또는 폴더 크기 | null
  */
 FileManager.prototype.getStorageSize = function(path, unit) {
-    const targetUnit = unit || "mb";
-
     try {
-        const file = this._resolvePath(path);
+        let normalizedPath = this._normalizePath(path);
+        const file = this._resolvePath(normalizedPath);
         if (!file || !file.exists()) return null;
 
+        let totalSize;
         if (file.isFile()) {
-            return this._convertSize(file.length(), targetUnit);
+            totalSize = file.length();
+        } else {
+            const context = this._traverseDirectory(file.getAbsolutePath(), {
+                onFile: (file, context) => {
+                    context.totalSize += file.length();
+                },
+                initialContext: { totalSize: 0 }
+            });
+            totalSize = context.totalSize;
         }
 
-        const context = this._traverseDirectory(file.getAbsolutePath(), {
-            onFile: (file, context) => {
-                context.totalSize += file.length();
-            },
-            initialContext: { totalSize: 0 }
-        });
-
-        return this._convertSize(context.totalSize, targetUnit);
+        if (unit) {
+            return this._convertSize(totalSize, unit);
+        } else {
+            return this._formatSize(totalSize);
+        }
     } catch (e) {
         this._handleError(e);
         return null;
@@ -892,7 +931,8 @@ FileManager.prototype.getStorageSize = function(path, unit) {
  */
 FileManager.prototype.remove = function(path) {
     try {
-        let file = this._resolvePath(path);
+        let normalizedPath = this._normalizePath(path);
+        let file = this._resolvePath(normalizedPath);
         if (!file) return false;
         if (!file.exists()) return true;
         if (file.isDirectory()) return this.deleteDirectory(file.getAbsolutePath());

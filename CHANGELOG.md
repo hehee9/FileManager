@@ -2,6 +2,11 @@
 
 모든 중요한 변경 사항은 이 파일에 기록됩니다.
 
+## [1.2.0] - 2025-08-17
+### 추가
+- `zip` 함수에 암호 설정 옵션 추가 (`FileManager.zip(sourcePath, zipFilePath, password)`)
+- `unzip` 함수에 암호 설정 옵션 추가 (`FileManager.unzip(zipFilePath, resultFolderPath, password)`)
+
 ## [1.1.2] - 2025-07-30
 ### 변경
 - 다른 모듈 등에서 이용하는 경우에 대비해 bind 처리

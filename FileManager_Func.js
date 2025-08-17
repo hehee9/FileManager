@@ -235,6 +235,51 @@ FileManager.prototype._traverseDirectory = function(path, options) {
     return context;
 };
 
+
+/**
+ * @description Zip4j 가용성 및 클래스 획득 시도
+ * @returns {object} { available: boolean, version: 0|1|2, classes: {...} }
+ */
+FileManager.prototype._detectZip4j = function() {
+    const info = {
+        available: false,
+        version: 0, // 0: 없음, 1: v1, 2: v2
+        classes: {}
+    };
+    try {
+        // Zip4j v2 시도
+        let ZipFileV2 = Packages.net.lingala.zip4j.ZipFile;
+        let ZipParametersV2 = Packages.net.lingala.zip4j.model.ZipParameters;
+        let EncryptionMethodV2 = Packages.net.lingala.zip4j.model.enums.EncryptionMethod;
+        let AesKeyStrengthV2 = Packages.net.lingala.zip4j.model.enums.AesKeyStrength;
+        info.available = true;
+        info.version = 2;
+        info.classes = {
+            ZipFile: ZipFileV2,
+            ZipParameters: ZipParametersV2,
+            EncryptionMethod: EncryptionMethodV2,
+            AesKeyStrength: AesKeyStrengthV2
+        };
+        return info;
+    } catch (_) { }
+    try {
+        // Zip4j v1 시도
+        let ZipFileV1 = Packages.net.lingala.zip4j.core.ZipFile;
+        let ZipParametersV1 = Packages.net.lingala.zip4j.model.ZipParameters;
+        let Zip4jConstantsV1 = Packages.net.lingala.zip4j.util.Zip4jConstants;
+        info.available = true;
+        info.version = 1;
+        info.classes = {
+            ZipFile: ZipFileV1,
+            ZipParameters: ZipParametersV1,
+            Zip4jConstants: Zip4jConstantsV1
+        };
+        return info;
+    } catch (_) { }
+    return info;
+};
+
+
 /** @description 파일명/경로 관련 유틸리티 함수 네임스페이스 */
 FileManager.prototype.utils = {
     /**
@@ -694,9 +739,10 @@ FileManager.prototype.copy = function(sourcePath, resultPath) {
  * @description 파일/폴더를 ZIP 파일로 압축
  * @param {string} sourcePath 압축할 파일/폴더 경로
  * @param {string} [zipFilePath] 압축 파일 경로
+ * @param {string} [password] 압축 파일 비밀번호
  * @returns {string|null} 성공 시 압축 파일 경로 | null
  */
-FileManager.prototype.zip = function(sourcePath, zipFilePath) {
+FileManager.prototype.zip = function(sourcePath, zipFilePath, password) {
     let normalizedSourcePath = this._normalizePath(sourcePath);
     let sourceFile = this._resolvePath(normalizedSourcePath);
     if (!sourceFile || !sourceFile.exists()) {
@@ -723,6 +769,67 @@ FileManager.prototype.zip = function(sourcePath, zipFilePath) {
         }
     }
 
+    // 암호 압축
+    let usePassword = typeof password === 'string' && password.length > 0;
+    if (usePassword) {
+        let zinfo = this._detectZip4j();
+        if (!zinfo.available) {
+            Log.e("현재 환경에서 Zip4j 라이브러리를 찾을 수 없어 암호 설정이 불가합니다.");
+            return null;
+        }
+        try {
+            if (zinfo.version === 2) {
+                let ZipFileV2 = zinfo.classes.ZipFile;
+                let ZipParametersV2 = zinfo.classes.ZipParameters;
+                let EncryptionMethodV2 = zinfo.classes.EncryptionMethod;
+                let AesKeyStrengthV2 = zinfo.classes.AesKeyStrength;
+
+                let zf = new ZipFileV2(String(zipFile.getAbsolutePath()));
+                let params = new ZipParametersV2();
+                params.setEncryptFiles(true);
+                params.setEncryptionMethod(EncryptionMethodV2.AES);
+                params.setAesKeyStrength(AesKeyStrengthV2.KEY_STRENGTH_256);
+                let pwdChars = new java.lang.String(String(password)).toCharArray();
+                zf.setPassword(pwdChars);
+
+                if (sourceFile.isDirectory()) {
+                    zf.addFolder(sourceFile, params);
+                } else {
+                    zf.addFile(sourceFile, params);
+                }
+                return zipFile.getAbsolutePath();
+            } else if (zinfo.version === 1) {
+                let ZipFileV1 = zinfo.classes.ZipFile;
+                let ZipParametersV1 = zinfo.classes.ZipParameters;
+                let C = zinfo.classes.Zip4jConstants;
+
+                let zf = new ZipFileV1(new File(String(zipFile.getAbsolutePath())));
+                try {
+                    zf.setFileNameCharset("UTF-8");
+                } catch (_) { }
+
+                let params = new ZipParametersV1();
+                params.setCompressionMethod(C.COMP_DEFLATE);
+                params.setCompressionLevel(C.DEFLATE_LEVEL_NORMAL);
+                params.setEncryptFiles(true);
+                params.setEncryptionMethod(C.ENC_METHOD_AES);
+                params.setAesKeyStrength(C.AES_STRENGTH_256);
+                zf.setPassword(String(password));
+
+                if (sourceFile.isDirectory()) {
+                    zf.addFolder(sourceFile, params);
+                } else {
+                    zf.addFile(sourceFile, params);
+                }
+                return zipFile.getAbsolutePath();
+            }
+        } catch (e) {
+            this._handleError(e, "Zip4j 암호 ZIP 생성 중 오류");
+            return null;
+        }
+    }
+
+    // 암호 없이 압축
     let fos = null;
     let zos = null;
     try {
@@ -799,9 +906,10 @@ FileManager.prototype.zip = function(sourcePath, zipFilePath) {
  * @description ZIP 파일 압축 해제
  * @param {string} zipFilePath 압축 해제할 ZIP 파일의 경로
  * @param {string} [resultFolderPath] 압축 해제 결과 폴더 경로
+ * @param {string} [password] 압축 해제 비밀번호
  * @returns {string|null} 성공 시 압축 해제된 폴더 경로 | null
  */
-FileManager.prototype.unzip = function(zipFilePath, resultFolderPath) {
+FileManager.prototype.unzip = function(zipFilePath, resultFolderPath, password) {
     let zipFile = this._resolvePath(zipFilePath);
     if (!zipFile || !zipFile.exists() || zipFile.isDirectory()) {
         Log.e(`${zipFilePath}은/는 파일이 아니거나 유효하지 않습니다.`);
@@ -824,6 +932,46 @@ FileManager.prototype.unzip = function(zipFilePath, resultFolderPath) {
         destDirectory.mkdirs();
     }
 
+
+    // 암호 압축 해제
+    let usePassword = typeof password === 'string' && password.length > 0;
+    if (usePassword) {
+        let zinfo = this._detectZip4j();
+        if (!zinfo.available) {
+            Log.e("현재 환경에서 Zip4j 라이브러리를 찾을 수 없어 암호 설정이 불가합니다.");
+            return null;
+        }
+        try {
+            if (zinfo.version === 2) {
+                let ZipFileV2 = zinfo.classes.ZipFile;
+                let zf = new ZipFileV2(String(zipFile.getAbsolutePath()));
+
+                let pwdChars = new java.lang.String(String(password)).toCharArray();
+                zf.setPassword(pwdChars);
+                zf.extractAll(destDirectory.getAbsolutePath());
+                return destDirectory.getAbsolutePath();
+            } else if (zinfo.version === 1) {
+                let ZipFileV1 = zinfo.classes.ZipFile;
+                let zf = new ZipFileV1(new File(zipFile.getAbsolutePath()));
+                try {
+                    zf.setFileNameCharset("UTF-8");
+                } catch (eSetCharset) {}
+                if (zf.isEncrypted()) {
+                    zf.setPassword(String(password));
+                } else {
+                    zf.setPassword(String(password));
+                }
+                zf.extractAll(destDirectory.getAbsolutePath());
+                return destDirectory.getAbsolutePath();
+            }
+        } catch (e) {
+            this._handleError(e, "Zip4j 압축 해제 중 오류 발생");
+            return null;
+        }
+    }
+
+
+    // 암호 없이 압축 해제
     // Zip Slip 방지를 위한 대상 경로 정규화
     let destDirPath;
     try {

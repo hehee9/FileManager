@@ -72,8 +72,8 @@ FileManager.unzip("sdcard/msgbot/test.zip", "sdcard/msgbot/unzipped");
 - `delete(path)` : 파일 삭제
 - `move(sourcePath, resultPath)` : 파일/폴더 이동
 - `copy(sourcePath, resultPath)` : 파일/폴더 복사
-- `zip(sourcePath, zipFilePath)` : ZIP 압축
-- `unzip(zipFilePath, resultFolderPath)` : ZIP 해제
+- `zip(sourcePath, zipFilePath, password)` : ZIP 압축
+- `unzip(zipFilePath, resultFolderPath, password)` : ZIP 해제
 - `getStorageSize(path, unit)` : 파일/폴더 용량 계산
 - `remove(path)` : 파일/폴더 삭제
 
